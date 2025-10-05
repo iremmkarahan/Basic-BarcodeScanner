@@ -20,66 +20,91 @@ protocol ScannerVCDelegate: AnyObject {
 }
 
 final class ScannerVC: UIViewController {
-
+    
     private let captureSession = AVCaptureSession()
     private var previewLayer: AVCaptureVideoPreviewLayer?
     weak var scannerDelegate: ScannerVCDelegate?
-
+    
     init(scannerDelegate: ScannerVCDelegate) {
         self.scannerDelegate = scannerDelegate
         super.init(nibName: nil, bundle: nil)
     }
-
+    
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-
+    
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = .black
         setupCaptureSession()
     }
-
+    
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
         previewLayer?.frame = view.bounds
     }
-
+    
     private func setupCaptureSession() {
-        switch AVCaptureDevice.authorizationStatus(for: .video) {
+        let authorizationStatus = AVCaptureDevice.authorizationStatus(for: .video)
+        
+        switch authorizationStatus {
         case .authorized:
             configureSession()
+            
         case .notDetermined:
             AVCaptureDevice.requestAccess(for: .video) { granted in
                 if granted {
-                    DispatchQueue.main.async { self.configureSession() }
+                    DispatchQueue.main.async {
+                        self.configureSession()
+                    }
+                } else {
+                    DispatchQueue.main.async {
+                        self.scannerDelegate?.didSurface(error: .invalidDeviceInput)
+                    }
                 }
             }
-        default:
-            print("Camera access denied or restricted")
+            
+        case .denied, .restricted:
+            // Notify the delegate so UI can show an alert
+            scannerDelegate?.didSurface(error: .invalidDeviceInput)
+            
+        @unknown default:
+            scannerDelegate?.didSurface(error: .invalidDeviceInput)
         }
     }
-
     private func configureSession() {
-        guard let videoCaptureDevice = AVCaptureDevice.default(for: .video),
-              let videoInput = try? AVCaptureDeviceInput(device: videoCaptureDevice),
-              captureSession.canAddInput(videoInput) else { return }
-
-        captureSession.addInput(videoInput)
-
+        guard let videoCaptureDevice = AVCaptureDevice.default(for: .video) else {
+            scannerDelegate?.didSurface(error: .invalidDeviceInput)
+            return
+        }
+        
+        guard let videoInput = try? AVCaptureDeviceInput(device: videoCaptureDevice) else {
+            scannerDelegate?.didSurface(error: .invalidDeviceInput)
+            return
+        }
+        
+        if captureSession.canAddInput(videoInput) {
+            captureSession.addInput(videoInput)
+        } else {
+            scannerDelegate?.didSurface(error: .invalidDeviceInput)
+            return
+        }
+        
         let metaDataOutput = AVCaptureMetadataOutput()
-        guard captureSession.canAddOutput(metaDataOutput) else { return }
-        captureSession.addOutput(metaDataOutput)
-
-        metaDataOutput.setMetadataObjectsDelegate(self, queue: DispatchQueue.main)
-        metaDataOutput.metadataObjectTypes = [.ean8, .ean13, .upce, .qr]
-
+        if captureSession.canAddOutput(metaDataOutput) {
+            captureSession.addOutput(metaDataOutput)
+            metaDataOutput.setMetadataObjectsDelegate(self, queue: DispatchQueue.main)
+            metaDataOutput.metadataObjectTypes = [.ean8, .ean13, .upce, .qr]
+        } else {
+            scannerDelegate?.didSurface(error: .invalidDeviceInput)
+            return
+        }
+        
         previewLayer = AVCaptureVideoPreviewLayer(session: captureSession)
         previewLayer?.videoGravity = .resizeAspectFill
         view.layer.addSublayer(previewLayer!)
-
         captureSession.startRunning()
     }
 }
-
 extension ScannerVC: AVCaptureMetadataOutputObjectsDelegate {
     func metadataOutput(_ output: AVCaptureMetadataOutput,
                         didOutput metadataObjects: [AVMetadataObject],
